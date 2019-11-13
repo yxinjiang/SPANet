@@ -19,8 +19,8 @@ class TrainValDataset(Dataset):
 
     def __getitem__(self, idx):
         file_name = self.mat_files[idx % self.file_num]
-        gt_file = file_name.split(' ')[1][:-1]
-        img_file = file_name.split(' ')[0]
+        gt_file = "." + file_name.split(' ')[1][:-1]
+        img_file = "." + file_name.split(' ')[0]
 
         O = cv2.imread(img_file)
         B = cv2.imread(gt_file)

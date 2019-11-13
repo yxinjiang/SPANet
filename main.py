@@ -19,8 +19,8 @@ import progressbar
 
 from dataset import TrainValDataset, TestDataset
 from cal_ssim import SSIM
-from SPANet import SPANet
-
+from SPANet_GRU import SPANet, print_network
+import timeit
 
 logger = logging.getLogger('train')
 logger.setLevel(logging.INFO)
@@ -55,21 +55,24 @@ class Session:
         self.test_data_path = 'testing/real_test_1000.txt'                 # test dataset txt file path
         self.train_data_path = 'training/real_world.txt'          # train dataset txt file path
         
-        self.multi_gpu = True
+        self.multi_gpu = False
+        torch.cuda.empty_cache()
         self.net = SPANet().to(self.device)
+        print_network(self.net)
         self.l1 = nn.L1Loss().to(self.device)
         self.l2 = nn.MSELoss().to(self.device)
         self.ssim = SSIM().to(self.device)
         
         self.step = 0
         self.save_steps = 400
-        self.num_workers = 16
-        self.batch_size = 32
+        self.num_workers = 1
+        self.batch_size = 2
         self.writers = {}
         self.dataloaders = {}
         self.shuffle = True
         self.opt = Adam(self.net.parameters(), lr=5e-3)
-        self.sche = MultiStepLR(self.opt, milestones=[5000, 15000,30000,50000], gamma=0.1)
+        self.sche = MultiStepLR(self.opt, milestones=[500, 1500,2000,3000], gamma=0.1)
+        self.step_time = 0
 
     def tensorboard(self, name):
         self.writers[name] = SummaryWriter(os.path.join(self.log_dir, name + '.events'))
@@ -81,6 +84,7 @@ class Session:
 
         out['lr'] = self.opt.param_groups[0]['lr']
         out['step'] = self.step
+        out['step_time'] =  self.step_time
         outputs = [
             "{}:{:.4g}".format(k, v) 
             for k, v in out.items()
@@ -110,6 +114,11 @@ class Session:
         torch.save(obj, ckp_path)
 
     def load_checkpoints(self, name,mode='train'):
+        obj = {
+            'net': self.net.state_dict(),
+            'clock': self.step,
+            'opt': self.opt.state_dict(),
+        }
         ckp_path = os.path.join(self.model_dir, name)
         try:
             self.net.load_state_dict({k.replace('module.',''):v for k,v in torch.load(ckp_path)['net'].items()})
@@ -207,7 +216,7 @@ class Session:
 
 def run_train_val(ckp_name='latest'):
     sess = Session()
-    sess.load_checkpoints(ckp_name)
+    #sess.load_checkpoints(ckp_name)
     if sess.multi_gpu :
         sess.net = nn.DataParallel(sess.net)
     sess.tensorboard(sess.log_name)
@@ -216,21 +225,28 @@ def run_train_val(ckp_name='latest'):
     dt_train = sess.get_dataloader(sess.train_data_path)
     dt_val = sess.get_dataloader(sess.train_data_path)
 
-    while sess.step < 800000:
+    while sess.step < 3600:
+        start = timeit.default_timer()
         sess.sche.step()
         sess.net.train()
         sess.net.zero_grad()
 
         batch_t = next(dt_train)
         pred_t,mask_t,M_t, loss_t, losses_t = sess.inf_batch(sess.log_name, batch_t)
-        sess.write(sess.log_name, losses_t)
+        
         loss_t.backward()
+        sess.step_time = timeit.default_timer() - start
+        sess.write(sess.log_name, losses_t)
+        
         sess.opt.step() 
+        
 
         if sess.step % 4 == 0:
+            start = timeit.default_timer()
             sess.net.eval()
             batch_v = next(dt_val)
             pred_v,mask_v,M_v, loss_v, losses_v = sess.inf_batch(sess.val_log_name, batch_v)
+            sess.step_time = timeit.default_timer() - start
             sess.write(sess.val_log_name, losses_v)
         if sess.step % int(sess.save_steps / 16) == 0:
             sess.save_checkpoints('latest')
@@ -286,10 +302,11 @@ def run_test(ckp_name):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-a', '--action', default='test')
+    parser.add_argument('-a', '--action', default='train')
     parser.add_argument('-m', '--model', default='latest')
 
-    args = parser.parse_args(sys.argv[1:])
+    #args = parser.parse_args(sys.argv[1:])
+    args = parser.parse_args()
     
     if args.action == 'train':
         run_train_val(args.model)

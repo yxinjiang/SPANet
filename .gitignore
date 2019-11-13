@@ -1,0 +1,7 @@
+*.png
+*.pyc
+*.jpg
+logdir/*
+*.mov
+synthetic_video_dataset/*
+*.h5

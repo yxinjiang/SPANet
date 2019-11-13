@@ -1,9 +1,22 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+torch.manual_seed(1)
+
 from collections import OrderedDict
 # import common
 from irnn import irnn
+
+from torch.autograd import Variable
+
+######print network
+def print_network(net):
+	num_params = 0
+	for param in net.parameters():
+		num_params += param.numel()
+	print(net)
+	print('Total number of parameters: %d' % num_params)
+
 ###### Layer 
 def conv1x1(in_channels, out_channels, stride = 1):
     return nn.Conv2d(in_channels,out_channels,kernel_size = 1,
@@ -29,21 +42,96 @@ class Bottleneck(nn.Module):
         out = self.group1(x) 
         return out
 
-class Spacial_IRNN(nn.Module):
-    def __init__(self,in_channels,alpha=0.2):
-        super(Spacial_IRNN,self).__init__()
-        self.left_weight  = nn.Conv2d(in_channels,in_channels,kernel_size=1,stride=1,groups=in_channels,padding=0)
-        self.right_weight = nn.Conv2d(in_channels,in_channels,kernel_size=1,stride=1,groups=in_channels,padding=0)
-        self.up_weight    = nn.Conv2d(in_channels,in_channels,kernel_size=1,stride=1,groups=in_channels,padding=0)
-        self.down_weight  = nn.Conv2d(in_channels,in_channels,kernel_size=1,stride=1,groups=in_channels,padding=0)
-        self.left_weight.weight  = nn.Parameter(torch.tensor([[[[alpha]]]]*32))
-        self.right_weight.weight = nn.Parameter(torch.tensor([[[[alpha]]]]*32))
-        self.up_weight.weight    = nn.Parameter(torch.tensor([[[[alpha]]]]*32))
-        self.down_weight.weight  = nn.Parameter(torch.tensor([[[[alpha]]]]*32))
-      
-    def forward(self,input):
-        return irnn()(input,self.up_weight.weight,self.right_weight.weight,self.down_weight.weight,self.left_weight.weight, self.up_weight.bias,self.right_weight.bias,self.down_weight.bias,self.left_weight.bias)
 
+class Renet(nn.Module):
+    def __init__(self, in_channels,hidden_size=256):
+        super(Renet, self).__init__()
+        self.in_channel = in_channels
+        self.out_channel = in_channels
+        self.hidden_size = hidden_size
+        self.vertical = nn.LSTM(input_size=in_channels, hidden_size=hidden_size, batch_first=True,
+                                bidirectional=True)  # each row
+        self.horizontal = nn.LSTM(input_size=in_channels, hidden_size=hidden_size, batch_first=True,
+                                  bidirectional=True)  # each column
+        self.conv_down = nn.Conv2d(256, self.out_channel, 1)
+        self.conv_up = nn.Conv2d(256, self.out_channel, 1)
+        self.conv_right = nn.Conv2d(256, self.out_channel, 1)
+        self.conv_left = nn.Conv2d(256, self.out_channel, 1)
+
+    def forward(self, input):
+        x = input      
+        x = torch.transpose(x, 1, 3)  # batch, width, height, in_channel
+        print('x shape: ',x.shape)
+        if len(x.shape) == 3:
+            _,height,width = x.shape
+        elif len(x.shape) ==4:
+            _,_,height,width = x.shape
+        else:
+            print("Error")
+       
+            #temp = []
+        temp_up=[]
+        temp_down=[]
+        for i in range(height):
+            h, _ = self.vertical(x[:, :, i, :])# h.shape: batch, width, 512
+            #temp.append(h)  
+            temp_up.append(h[:,:,:self.hidden_size])
+            temp_down.append(h[:,:,self.hidden_size:])
+        #x = torch.stack(temp, dim=2)  # batch, width, height, 512
+        #x = torch.transpose(x, 1, 3)  # batch, 512, height, width
+        x_down = torch.stack(temp_down,dim=2)
+        x_down = torch.transpose(x_down,1,3)
+        x_down = self.conv_down(x_down)
+        x_up = torch.stack(temp_up,dim=2)
+        x_up = torch.transpose(x_up,1,3)
+        x_up = self.conv_up(x_up)
+
+        
+        #temp = []
+        temp_right=[]
+        temp_left=[]
+        for i in range(width):
+            h, _ = self.horizontal(x[:, i, :, :])
+            #temp.append(h)  # batch, width, 512
+            temp_right.append(h[:,:,:self.hidden_size])
+            temp_left.append(h[:,:,self.hidden_size:])
+        #x = torch.stack(temp, dim=3)  # batch, height, 512, width
+        # x = torch.transpose(x, 1, 2)  # batch, 512, height, width
+        #x = self.conv(x)
+        x_right = torch.stack(temp_down,dim=2)
+        x_right = torch.transpose(x_right,1,3)
+        x_right = self.conv_right(x_right)
+        x_left = torch.stack(temp_left,dim=2)
+        x_left = torch.transpose(x_left,1,3)
+        x_left = self.conv_left(x_left)
+
+        
+        return x_down,x_up,x_right,x_left
+
+class Spacial_LSTM(nn.Module):
+    def __init__(self,in_channels):
+        super(Spacial_LSTM,self).__init__()
+        self.feature_map  = nn.Conv2d(in_channels,in_channels,kernel_size=1,stride=1,groups=in_channels,padding=0)
+        #self.right_weight = nn.Conv2d(in_channels,in_channels,kernel_size=1,stride=1,groups=in_channels,padding=0)
+        #self.up_weight    = nn.Conv2d(in_channels,in_channels,kernel_size=1,stride=1,groups=in_channels,padding=0)
+        #self.down_weight  = nn.Conv2d(in_channels,in_channels,kernel_size=1,stride=1,groups=in_channels,padding=0)
+        #weight = nn.Parameter(self.left_weight.weight)
+        #self.right_weight.weight = weight
+        #self.up_weight.weight = weight
+        #self.down_weight = weight
+
+        #bias = nn.Parameter(self.left_weight.bias)
+        #self.right_weight.bias = bias
+        self.renet = Renet(in_channels)
+               
+    def forward(self,input):
+        #down = self.left_weight(input)
+        #up = self.right_weight(input)
+        #right = self.right_weight(input)
+        #left = self.left_weight(input)
+        x = self.feature_map(input)
+        up_weight,down_weight,right_weight,left_weight = self.renet(x)
+        return up_weight,right_weight,down_weight,left_weight   
 
 
 class Attention(nn.Module):
@@ -71,8 +159,10 @@ class SAM(nn.Module):
     def __init__(self,in_channels,out_channels,attention=1):
         super(SAM,self).__init__()
         self.out_channels = out_channels
-        self.irnn1 = Spacial_IRNN(self.out_channels)
-        self.irnn2 = Spacial_IRNN(self.out_channels)
+        #self.irnn1 = Spacial_IRNN(self.out_channels)
+        #self.irnn2 = Spacial_IRNN(self.out_channels)
+        self.irnn1 = Spacial_LSTM(self.out_channels)
+        self.irnn2 = Spacial_LSTM(self.out_channels)
         self.conv_in = conv3x3(in_channels,in_channels)
         self.conv2 = conv3x3(in_channels*4,in_channels)
         self.conv3 = conv3x3(in_channels*4,in_channels)
@@ -87,8 +177,9 @@ class SAM(nn.Module):
         if self.attention:
             weight = self.attention_layer(x)
         out = self.conv_in(x)
+        #print("conv_in out shape: ",out.shape)
         top_up,top_right,top_down,top_left = self.irnn1(out)
-        
+        #print('top_up shape ',top_up.shape)
         # direction attention
         if self.attention:
             top_up.mul(weight[:,0:1,:,:])
@@ -176,3 +267,10 @@ class SPANet(nn.Module):
 
         return Attention1 , out
 
+if __name__ == "__main__":
+    random_input = Variable(torch.FloatTensor(1,3,32,32).normal_(),requires_grad=False) #batch,in_channel,height,width 
+    spanet = SPANet()
+    print_network(spanet)
+    out = spanet(random_input)
+
+    
