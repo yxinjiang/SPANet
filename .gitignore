@@ -5,3 +5,4 @@ logdir/*
 *.mov
 synthetic_video_dataset/*
 *.h5
+logs/
